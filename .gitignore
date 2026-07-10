@@ -1,0 +1,20 @@
+# Ignore python virtual environment
+venv/
+.venv/
+env/
+
+# Ignore SQLite database
+*.db
+scans.db
+
+# Ignore environment/secrets containing Gmail App Password
+.env
+
+# Ignore compiled python files and cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore OS files
+.DS_Store
