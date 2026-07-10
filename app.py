@@ -22,10 +22,11 @@ if os.path.exists(".env"):
 
 app = Flask(__name__)
 app.secret_key = "dwm_simulation_secret_key_1337"
-DB_PATH = "scans.db"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, "scans.db")
 
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -100,13 +101,16 @@ This code is valid for 5 minutes. If you did not request this, please ignore thi
 SECURITY NOTICE: Do not share this code with anyone. DWM operators will never ask for your authorization code."""
 
     # 1. Save to Simulated Emails database for the local UI/dashboard
-    conn = get_db_connection()
-    conn.execute('''
-        INSERT INTO simulated_emails (recipient, subject, body)
-        VALUES (?, ?, ?)
-    ''', (recipient, subject, body))
-    conn.commit()
-    conn.close()
+    try:
+        conn = get_db_connection()
+        conn.execute('''
+            INSERT INTO simulated_emails (recipient, subject, body)
+            VALUES (?, ?, ?)
+        ''', (recipient, subject, body))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[DB ERROR] Failed to save simulated email: {e}")
 
     # 2. Try sending real email if SMTP is configured in env
     smtp_server = os.environ.get("SMTP_SERVER")
@@ -122,21 +126,25 @@ SECURITY NOTICE: Do not share this code with anyone. DWM operators will never as
             msg['From'] = smtp_from
             msg['To'] = recipient
 
-            with smtplib.SMTP(smtp_server, int(smtp_port)) as server:
-                server.starttls()
-                server.login(smtp_username, smtp_password)
-                server.sendmail(smtp_from, [recipient], msg.as_string())
+            port = int(smtp_port)
+            if port == 465:
+                with smtplib.SMTP_SSL(smtp_server, port, timeout=10) as server:
+                    server.login(smtp_username, smtp_password)
+                    server.sendmail(smtp_from, [recipient], msg.as_string())
+            else:
+                with smtplib.SMTP(smtp_server, port, timeout=10) as server:
+                    server.starttls()
+                    server.login(smtp_username, smtp_password)
+                    server.sendmail(smtp_from, [recipient], msg.as_string())
             print(f"[SMTP] Successfully sent OTP email to {recipient}")
+            return True
         except Exception as e:
             print(f"[SMTP ERROR] Failed to send email to {recipient}: {e}")
-    else:
-        print(f"[MOCK SMTP] Email to {recipient} simulated. OTP: {otp}")
+            return False
+    return False
 
-def get_otp_message(base_msg, otp):
-    smtp_server = os.environ.get("SMTP_SERVER")
-    smtp_username = os.environ.get("SMTP_USERNAME")
-    smtp_password = os.environ.get("SMTP_PASSWORD")
-    if smtp_server and smtp_username and smtp_password:
+def get_otp_message(base_msg, otp, smtp_sent):
+    if smtp_sent:
         return base_msg
     return f"{base_msg} (Simulated OTP: {otp})"
 
@@ -196,11 +204,11 @@ def register():
     conn.close()
     
     # Send OTP
-    send_otp_email(email, otp)
+    sent = send_otp_email(email, otp)
 
     session['pending_email'] = email
     session['pending_action'] = 'verify'
-    return redirect(url_for('auth_page', action='verify', msg=get_otp_message("A verification OTP has been sent to your email.", otp)))
+    return redirect(url_for('auth_page', action='verify', msg=get_otp_message("A verification OTP has been sent to your email.", otp, sent)))
 
 @app.route("/login", methods=["POST"])
 def login():
@@ -229,10 +237,10 @@ def login():
             conn.commit()
             conn.close()
 
-            send_otp_email(email, otp)
+            sent = send_otp_email(email, otp)
             session['pending_email'] = email
             session['pending_action'] = 'verify'
-            return redirect(url_for('auth_page', action='verify', error=get_otp_message("Email verification is pending. A new OTP has been sent.", otp)))
+            return redirect(url_for('auth_page', action='verify', error=get_otp_message("Email verification is pending. A new OTP has been sent.", otp, sent)))
 
         session['user_id'] = user['id']
         session['user_name'] = f"{user['firstname']} {user['lastname']}"
@@ -315,10 +323,10 @@ def forgot_password():
     conn.commit()
     conn.close()
 
-    send_otp_email(email, otp)
+    sent = send_otp_email(email, otp)
     session['pending_email'] = email
     session['pending_action'] = 'reset'
-    return redirect(url_for('auth_page', action='reset', msg=get_otp_message("A password reset OTP has been sent to your email.", otp)))
+    return redirect(url_for('auth_page', action='reset', msg=get_otp_message("A password reset OTP has been sent to your email.", otp, sent)))
 
 @app.route("/reset-password", methods=["POST"])
 def reset_password():
@@ -391,9 +399,9 @@ def resend_otp():
     conn.commit()
     conn.close()
 
-    send_otp_email(email, otp)
+    sent = send_otp_email(email, otp)
     target_action = 'verify' if action == 'verify' else 'reset'
-    return redirect(url_for('auth_page', action=target_action, msg=get_otp_message("A new OTP code has been sent.", otp)))
+    return redirect(url_for('auth_page', action=target_action, msg=get_otp_message("A new OTP code has been sent.", otp, sent)))
 
 @app.route("/logout")
 def logout():
